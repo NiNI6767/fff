@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GTA 2D — Мини-игра (HTML + JS)</title>
+  <style>
+    :root{font-family:Inter,system-ui,Segoe UI,Roboto,Arial;margin:0}
+    html,body{height:100%;background:#111;color:#eee}
+    .wrap{display:flex;gap:16px;padding:12px}
+    canvas{background:#7ec0ff;display:block;border:6px solid #222;border-radius:6px}
+    .hud{width:260px}
+    .panel{background:#0f1720;padding:12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.6)}
+    .panel h2{margin:0 0 8px 0;font-size:16px}
+    .row{display:flex;justify-content:space-between;margin:6px 0}
+    .btn{display:inline-block;padding:8px 10px;background:#1f2937;border-radius:6px;color:#fff;cursor:pointer;text-align:center}
+    small{color:#9aa}
+    .legend{font-size:13px;color:#cfe}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <canvas id="game" width="800" height="520"></canvas>
+    </div>
+    <div class="hud">
+      <div class="panel">
+        <h2>GTA 2D — Мини-игра</h2>
+        <div class="row"><div>Здоровье</div><div id="hp">100</div></div>
+        <div class="row"><div>Очки</div><div id="score">0</div></div>
+        <div class="row"><div>Патроны</div><div id="ammo">∞</div></div>
+        <div style="margin-top:8px" class="legend">
+          Управление: WASD / стрелки — движение<br>Пробел — стрелять<br>R — перезапустить
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <div id="restart" class="btn">Перезапустить</div>
+          <div id="spawnEnemy" class="btn">Создать NPC</div>
+        </div>
+      </div>
+      <div style="height:12px"></div>
+      <div class="panel">
+        <h2>Инфо</h2>
+        <p style="margin:0;line-height:1.4">Это простая топ‑даун мини-игра, похожая на старые GTA-2D: 
+        движемся по карте, стреляем по врагам, собираем очки. Код — в одном файле, можно править прямо здесь.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // === Настройки ===
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // Тайлы (простая карта) — 0 = дорога/трава, 1 = стена/здание
+  const TILE = 40;
+  const COLS = Math.ceil(W / TILE);
+  const ROWS = Math.ceil(H / TILE);
+
+  // Простая рандомная карта с несколькими зданиями
+  let map = [];
+  function generateMap(){
+    map = new Array(ROWS).fill(0).map(()=> new Array(COLS).fill(0));
+    // Добавим несколько прямоугольных зданий
+    const buildings = [
+      [2,1,5,4], [10,2,6,3], [4,8,6,3], [16,6,5,6]
+    ];
+    buildings.forEach(b=>{
+      const [cx,cy,w,h] = b;
+      for(let r=cy;r<cy+h;r++) for(let c=cx;c<cx+w;c++) if(map[r] && map[r][c]!==undefined) map[r][c]=1;
+    });
+  }
+
+  // Игрок
+  let player;
+  function createPlayer(){
+    player = {
+      x: W/2, y: H/2, w:24, h:14,
+      angle:0, speed:0, maxSpeed:3.2, hp:100, score:0
+    };
+  }
+
+  // Враги
+  let enemies = [];
+  function spawnEnemy(x,y){
+    enemies.push({x:x||(Math.random()* (W-80)+40), y:y||40+Math.random()*(H-120), w:20, h:12, hp:30, speed:1.2, dir:Math.random()*Math.PI*2, timer:0});
+  }
+
+  // Пули
+  let bullets = [];
+
+  // Ввод
+  const keys = {};
+  window.addEventListener('keydown', e=>{ keys[e.key.toLowerCase()] = true; if(e.key === ' ') e.preventDefault(); });
+  window.addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+  // UI элементы
+  const hpEl = document.getElementById('hp');
+  const scoreEl = document.getElementById('score');
+  const ammoEl = document.getElementById('ammo');
+  document.getElementById('restart').addEventListener('click', init);
+  document.getElementById('spawnEnemy').addEventListener('click', ()=>spawnEnemy());
+
+  // Инициaлизация
+  function init(){
+    generateMap();
+    createPlayer();
+    enemies = [];
+    bullets = [];
+    // пара врагов
+    for(let i=0;i<4;i++) spawnEnemy();
+  }
+
+  // Вспомогательные функции
+  function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+  function rectsCollide(a,b){
+    return !(a.x+a.w < b.x || a.x > b.x+b.w || a.y+a.h < b.y || a.y > b.y+b.h);
+  }
+
+  // Обновление логики
+  let last = 0;
+  function update(dt){
+    // управление игроком
+    const moveSpeed = player.maxSpeed;
+    let vx=0, vy=0;
+    if(keys['w']||keys['arrowup']) vy -= moveSpeed;
+    if(keys['s']||keys['arrowdown']) vy += moveSpeed;
+    if(keys['a']||keys['arrowleft']) vx -= moveSpeed;
+    if(keys['d']||keys['arrowright']) vx += moveSpeed;
+    // нормализация
+    if(vx!==0 || vy!==0){
+      const len = Math.hypot(vx,vy);
+      vx = vx/len * moveSpeed;
+      vy = vy/len * moveSpeed;
+      player.x += vx;
+      player.y += vy;
+      player.angle = Math.atan2(vy,vx);
+    }
+
+    // Проверка столкновений с границами и стенами
+    player.x = clamp(player.x, 4, W - player.w - 4);
+    player.y = clamp(player.y, 4, H - player.h - 4);
+    // стенки тайлов
+    const leftTile = Math.floor((player.x)/TILE);
+    const topTile = Math.floor((player.y)/TILE);
+    // простая защита: не позволяем заезжать в тайл со стеной — откатнем позицию (очень простая)
+    for(let r=0;r<ROWS;r++){
+      for(let c=0;c<COLS;c++){
+        if(map[r][c]===1){
+          const tx = c*TILE, ty = r*TILE, tw = TILE, th = TILE;
+          const tileRect = {x:tx,y:ty,w:tw,h:th};
+          if(rectsCollide(player,tileRect)){
+            // откат по оси, простая реакция: сдвинем игрока в сторону от центра тайла
+            const cx = tx + tw/2, cy = ty + th/2;
+            const dx = player.x - cx, dy = player.y - cy;
+            const d = Math.hypot(dx,dy)||1;
+            player.x = cx + (dx/d) * (tw/2 + player.w/2 + 1);
+            player.y = cy + (dy/d) * (th/2 + player.h/2 + 1);
+          }
+        }
+      }
+    }
+
+    // Выстрел
+    if((keys[' ']||keys['space']) && (player.fireTimer||0) <= 0){
+      const speed = 7.5;
+      bullets.push({x:player.x + player.w/2, y:player.y + player.h/2, vx:Math.cos(player.angle)*speed, vy:Math.sin(player.angle)*speed, life:1.8});
+      player.fireTimer = 0.18; // задержка между выстрелами
+    }
+    if(player.fireTimer > 0) player.fireTimer -= dt;
+
+    // Обновление пуль
+    bullets = bullets.filter(b=>b.life>0);
+    bullets.forEach(b=>{
+      b.x += b.vx;
+      b.y += b.vy;
+      b.life -= dt;
+    });
+
+    // Пули — столкновения с врагами и стенами
+    for(let i=bullets.length-1;i>=0;i--){
+      const b = bullets[i];
+      // границы
+      if(b.x<0||b.x>W||b.y<0||b.y>H){ b.life=0; continue; }
+      // тайлы-стены
+      const tc = Math.floor(b.x/TILE), tr = Math.floor(b.y/TILE);
+      if(map[tr] && map[tr][tc]===1){ b.life=0; continue; }
+      // враги
+      for(let j=enemies.length-1;j>=0;j--){
+        const e = enemies[j];
+        if(rectsCollide({x:b.x-3,y:b.y-3,w:6,h:6}, e)){
+          e.hp -= 20;
+          b.life = 0;
+          if(e.hp <= 0){ enemies.splice(j,1); player.score += 100; }
+          break;
+        }
+      }
+    }
+
+    // Враги — простое ИИ: идём к игроку, иногда поворачиваемся
+    enemies.forEach(e=>{
+      e.timer -= dt;
+      const dx = player.x - e.x, dy = player.y - e.y;
+      const dist = Math.hypot(dx,dy);
+      if(dist > 8){
+        e.x += (dx/dist) * e.speed * dt * 60;
+        e.y += (dy/dist) * e.speed * dt * 60;
+      }
+      // атака
+      if(dist < 32 && e.shootTimer <= 0){
+        // простой удар по игроку
+        player.hp -= 6;
+        e.shootTimer = 0.8 + Math.random()*1.2;
+      }
+      if(e.shootTimer > 0) e.shootTimer -= dt;
+      // коллизии с тайлами
+      const ec = Math.floor(e.x/TILE), er = Math.floor(e.y/TILE);
+      if(map[er] && map[er][ec]===1){
+        // оттолкнуться
+        e.x += (Math.random()-0.5)*30;
+        e.y += (Math.random()-0.5)*30;
+      }
+    });
+
+    // Игрок может терять hp, обновляем UI
+    player.hp = clamp(player.hp, 0, 100);
+    hpEl.textContent = Math.round(player.hp);
+    scoreEl.textContent = player.score;
+
+    // Если игрок умер
+    if(player.hp <= 0){
+      // показать сообщение и перезапустить
+      alert('Вы погибли! Очки: ' + player.score);
+      init();
+    }
+  }
+
+  // Рендер
+  function draw(){
+    // фон — трава
+    ctx.fillStyle = '#7ec0ff';
+    ctx.fillRect(0,0,W,H);
+
+    // тайлы
+    for(let r=0;r<ROWS;r++){
+      for(let c=0;c<COLS;c++){
+        const t = map[r][c];
+        const x = c*TILE, y = r*TILE;
+        if(t===1){
+          ctx.fillStyle = '#333';
+          ctx.fillRect(x,y,TILE,TILE);
+          // крыша/текстура
+          ctx.fillStyle = '#222';
+          ctx.fillRect(x+4,y+4,TILE-8,TILE-8);
+        } else {
+          // дорога/песок/травка — немного вариации
+          ctx.fillStyle = ( (r+c)%2===0 ? '#8fd36d' : '#86cc66');
+          ctx.fillRect(x,y,TILE,TILE);
+        }
+      }
+    }
+
+    // Нарисовать пули
+    bullets.forEach(b=>{
+      ctx.fillStyle = '#ffea7f';
+      ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, Math.PI*2); ctx.fill();
+    });
+
+    // Нарисовать врагов
+    enemies.forEach(e=>{
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.fillStyle = '#b33';
+      ctx.fillRect(-e.w/2, -e.h/2, e.w, e.h);
+      // HP bar
+      ctx.fillStyle = '#000'; ctx.fillRect(-e.w/2, -e.h/2 - 6, e.w, 4);
+      ctx.fillStyle = '#2ecc40'; ctx.fillRect(-e.w/2, -e.h/2 - 6, e.w * Math.max(0,e.hp)/30, 4);
+      ctx.restore();
+    });
+
+    // Нарисовать игрока (машина)
+    ctx.save();
+    ctx.translate(player.x + player.w/2, player.y + player.h/2);
+    ctx.rotate(player.angle);
+    // корпус
+    ctx.fillStyle = '#0b84ff';
+    ctx.fillRect(-player.w/2, -player.h/2, player.w, player.h);
+    // колёса
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-player.w/2+2, -player.h/2-3, 6, 3);
+    ctx.fillRect(-player.w/2+2, player.h/2, 6, 3);
+    ctx.fillRect(player.w/2-8, -player.h/2-3, 6, 3);
+    ctx.fillRect(player.w/2-8, player.h/2, 6, 3);
+    ctx.restore();
+
+    // Мини-карта (в уголке)
+    const mapW = 140, mapH = 90, mx=W-mapW-8, my=8;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(mx-4,my-4,mapW+8,mapH+8);
+    // маленькие тайлы
+    const sx = mapW / COLS, sy = mapH / ROWS;
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+      ctx.fillStyle = map[r][c]===1? '#444' : '#9fd77a';
+      ctx.fillRect(mx + c*sx, my + r*sy, sx, sy);
+    }
+    // игрок на миникарте
+    ctx.fillStyle = '#0b84ff';
+    ctx.fillRect(mx + (player.x/W)*mapW - 2, my + (player.y/H)*mapH -2, 4,4);
+
+    // HUD в канвасе
+    ctx.fillStyle = '#fff'; ctx.font = '13px monospace';
+    ctx.fillText('HP: ' + Math.round(player.hp), 8, 18);
+    ctx.fillText('Score: ' + player.score, 8, 36);
+  }
+
+  // Главный цикл
+  function loop(ts){
+    if(!last) last = ts;
+    const dt = Math.min(0.05,(ts-last)/1000);
+    update(dt);
+    draw();
+    last = ts;
+    requestAnimationFrame(loop);
+  }
+
+  // Keyboard quick keys
+  window.addEventListener('keydown', e=>{
+    if(e.key.toLowerCase()==='r') init();
+  });
+
+  // Запустить
+  init();
+  requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
